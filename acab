@@ -280,8 +280,11 @@ set_aws_config() {
 
     # Send informational output to stderr (so it displays but doesn't get eval'd)
     success "✓ AWS configuration updated:"
-    echo "  Config file: $(basename "$config_file")" >&2
-    echo "  Profile: $profile" >&2
+    echo "  AWS_CONFIG_FILE=$config_file" >&2
+    echo "  AWS_PROFILE=$profile" >&2
+    echo "" >&2
+    echo "  Double-check with:" >&2
+    echo '  echo "AWS_CONFIG_FILE=$AWS_CONFIG_FILE"; echo "AWS_PROFILE=$AWS_PROFILE"' >&2
     echo "" >&2
 
     # Output only the export commands to stdout (for eval)

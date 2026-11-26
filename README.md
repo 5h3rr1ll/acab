@@ -84,12 +84,6 @@ and `[services …]` are skipped.
 | `AWS_CONFIG_DIR` | Where to look for `config*` files (default `~/.aws`) |
 | `NO_COLOR` | Disable colors |
 
-## Upgrading from the old setup
-
-If your rc file has the old `acab() { eval "$(/path/to/acab "$@")"; }` function
-plus `source …/completion.zsh` and `compdef _acab_completion acab`, it keeps working.
-To simplify, replace all of it with `eval "$(acab init zsh)"`.
-
 ## Uninstall
 
 ```bash

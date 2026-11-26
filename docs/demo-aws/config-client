@@ -1,0 +1,7 @@
+[profile client-staging]
+role_arn = arn:aws:iam::210987654321:role/Consultant
+source_profile = default
+
+[profile client-prod]
+role_arn = arn:aws:iam::345678901234:role/Consultant
+source_profile = default

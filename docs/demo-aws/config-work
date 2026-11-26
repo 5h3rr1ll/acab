@@ -1,0 +1,27 @@
+[sso-session acme]
+sso_start_url = https://acme.awsapps.com/start
+sso_region = eu-central-1
+
+[profile platform-dev]
+sso_session = acme
+sso_account_id = 111122223333
+sso_role_name = PlatformAdmin
+region = eu-central-1
+
+[profile platform-prod]
+sso_session = acme
+sso_account_id = 444455556666
+sso_role_name = ReadOnly
+region = eu-central-1
+
+[profile data-lake]
+sso_session = acme
+sso_account_id = 777788889999
+sso_role_name = DataEngineer
+region = eu-west-1
+
+[profile billing]
+sso_session = acme
+sso_account_id = 123456789012
+sso_role_name = Billing
+region = us-east-1

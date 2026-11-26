@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck --version && shellcheck acab install.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest   # system bash 3.2 — the oldest we support
+            path_prefix: /bin
+          - os: ubuntu-latest  # bash 5
+            path_prefix: /usr/bin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core fzf
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bats fzf zsh
+      - name: Run tests
+        run: |
+          export PATH="${{ matrix.path_prefix }}:$PATH"
+          bash --version | head -1
+          bats --version
+          bats test/
+      - name: Shell integration parses
+        run: |
+          ./acab init bash | bash -n
+          ./acab init zsh | zsh -n

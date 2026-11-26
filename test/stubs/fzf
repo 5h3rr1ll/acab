@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Test stub for fzf. Non-interactive stand-in for the picker:
+#  - with --filter: delegates to the real fzf ($REAL_FZF)
+#  - otherwise: picks the first input line matching $FZF_STUB_PICK (or the first line);
+#    with $FZF_STUB_PICKS="a,b" and $FZF_STUB_STATE (a file), call N uses the Nth pattern;
+#    runs the --preview command for it the way fzf would (writing to $FZF_STUB_PREVIEW_OUT),
+#    and prints the pick.
+set -euo pipefail
+preview=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+        --filter|--filter=*) exec "$REAL_FZF" "$@" ;;
+        --preview) preview="${args[i+1]}" ;;
+        --preview=*) preview="${args[i]#--preview=}" ;;
+    esac
+done
+want="${FZF_STUB_PICK:-}"
+if [[ -n "${FZF_STUB_PICKS:-}" ]]; then
+    n=$(cat "$FZF_STUB_STATE" 2>/dev/null || echo 0)
+    echo $((n + 1)) > "$FZF_STUB_STATE"
+    IFS=, read -r -a picks <<< "$FZF_STUB_PICKS"
+    want="${picks[n]:-}"
+fi
+pick=""
+while IFS= read -r line; do
+    if [[ -z "$pick" && "$line" == *"$want"* ]]; then pick="$line"; fi
+done
+[[ -n "$pick" ]] || exit 1
+if [[ -n "$preview" && -n "${FZF_STUB_PREVIEW_OUT:-}" ]]; then
+    quoted="'${pick//\'/\'\\\'\'}'"
+    cmd="${preview//\{\}/$quoted}"
+    bash -c "$cmd" > "$FZF_STUB_PREVIEW_OUT" 2>&1 || echo "PREVIEW FAILED: $?" >> "$FZF_STUB_PREVIEW_OUT"
+fi
+printf '%s\n' "$pick"

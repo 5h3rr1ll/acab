@@ -15,8 +15,9 @@ readonly VERSION="1.0.0"
 readonly AWS_DIR="${AWS_CONFIG_DIR:-$HOME/.aws}"
 
 # Path to this script, symlinks kept as-is (stable across Homebrew upgrades).
+# Exported so fzf's preview command can call back into acab.
 ACAB_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-readonly ACAB_SELF
+export ACAB_SELF
 
 # Colors only when stderr is a terminal and NO_COLOR is unset (https://no-color.org)
 if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
@@ -24,6 +25,10 @@ if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
 else
     readonly RED='' GREEN='' YELLOW='' NC=''
 fi
+
+# Shorten $HOME to ~ for display.
+# shellcheck disable=SC2088  # literal ~ is the point
+tildify() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 
 error()   { printf '%sError: %s%s\n' "$RED" "$*" "$NC" >&2; exit 1; }
 success() { printf '%s%s%s\n' "$GREEN" "$*" "$NC" >&2; }
@@ -166,7 +171,7 @@ select_profile() {
     need_fzf
     # shellcheck disable=SC2016  # expanded by fzf's preview shell, not here
     selection=$(printf '%s\n' "$entries" | \
-        ACAB_SELF="$ACAB_SELF" ACAB_PREVIEW_CONFIG="$config_file" fzf \
+        ACAB_PREVIEW_CONFIG="$config_file" fzf \
         --prompt="AWS profile > " --height=40% --border \
         --header="Profiles in $(basename "$config_file") - search by name or account ID" \
         --preview '"$ACAB_SELF" __preview "$ACAB_PREVIEW_CONFIG" {}') ||
@@ -203,7 +208,7 @@ emit_exports() {
     local config_file="$1" profile="$2"
     success "✓ AWS configuration updated:"
     {
-        echo "  AWS_CONFIG_FILE=$config_file"
+        echo "  AWS_CONFIG_FILE=$(tildify "$config_file")"
         echo "  AWS_PROFILE=$profile"
         echo ""
         echo "  Double-check with:"

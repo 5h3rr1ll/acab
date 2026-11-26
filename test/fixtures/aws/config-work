@@ -1,0 +1,25 @@
+[default]
+region = eu-central-1
+
+[sso-session corp]
+sso_start_url = https://example.awsapps.com/start
+sso_region = eu-central-1
+
+[profile dev]
+sso_session = corp
+sso_account_id = 111122223333
+sso_role_name = Admin
+
+[profile prod]
+sso_session = corp
+sso_account_id = 444455556666
+sso_role_name = ReadOnly
+
+[profile prod-admin]
+sso_session = corp
+sso_account_id = 444455556666
+sso_role_name = Admin
+
+[services local-s3]
+s3 =
+  endpoint_url = http://localhost:4566

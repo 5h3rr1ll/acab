@@ -1,0 +1,3 @@
+[profile assumed]
+role_arn = arn:aws:iam::999988887777:role/Deploy
+source_profile = default

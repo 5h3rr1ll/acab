@@ -1,362 +1,329 @@
 #!/usr/bin/env bash
 #
-# ACAB - All Configs Are Beautiful
-# A CLI tool to switch between AWS config files and profiles using fzf
+# acab - All Configs Are Beautiful
+# Switch between multiple AWS config files and profiles with fzf.
+#
+# Output contract: stdout carries ONLY shell code meant for `eval`
+# (export lines, or the `acab init` integration). Everything a human
+# should read goes to stderr. Keep it that way.
+#
+# Compatible with bash 3.2 (macOS default) and newer.
 
 set -euo pipefail
 
-# Configuration
-AWS_DIR="${AWS_CONFIG_DIR:-$HOME/.aws}"
-readonly AWS_DIR
+readonly VERSION="1.0.0"
+readonly AWS_DIR="${AWS_CONFIG_DIR:-$HOME/.aws}"
 
-# Colors for output
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly NC='\033[0m' # No Color
+# Path to this script, symlinks kept as-is (stable across Homebrew upgrades).
+ACAB_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+readonly ACAB_SELF
 
-# Helper functions
-error() {
-    echo -e "${RED}Error: $*${NC}" >&2
-    exit 1
+# Colors only when stderr is a terminal and NO_COLOR is unset (https://no-color.org)
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+    readonly RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[1;33m' NC=$'\033[0m'
+else
+    readonly RED='' GREEN='' YELLOW='' NC=''
+fi
+
+error()   { printf '%sError: %s%s\n' "$RED" "$*" "$NC" >&2; exit 1; }
+success() { printf '%s%s%s\n' "$GREEN" "$*" "$NC" >&2; }
+warn()    { printf '%s%s%s\n' "$YELLOW" "$*" "$NC" >&2; }
+
+need_fzf() {
+    command -v fzf >/dev/null 2>&1 ||
+        error "fzf is required for this. Install it: https://github.com/junegunn/fzf#installation"
 }
 
-success() {
-    echo -e "${GREEN}$*${NC}" >&2
-}
+# True when a human can answer an fzf prompt.
+interactive() { [[ -t 2 ]] && { [[ -t 0 ]] || [[ -r /dev/tty ]]; } && [[ -z "${ACAB_NONINTERACTIVE:-}" ]]; }
 
-warn() {
-    echo -e "${YELLOW}$*${NC}" >&2
-}
+# ---------------------------------------------------------------------------
+# Config files
+# ---------------------------------------------------------------------------
 
-# Check if fzf is installed
-check_fzf() {
-    if ! command -v fzf &> /dev/null; then
-        error "fzf is not installed. Please install it first: https://github.com/junegunn/fzf"
-    fi
-}
-
-# List all config files in AWS directory
 list_config_files() {
-    local configs
-    configs=$(find "$AWS_DIR" -maxdepth 1 -type f -name "config*" 2>/dev/null | sort)
-
-    if [[ -z "$configs" ]]; then
-        error "No AWS config files found in $AWS_DIR"
-    fi
-
-    echo "$configs"
+    find "$AWS_DIR" -maxdepth 1 -type f -name 'config*' 2>/dev/null | LC_ALL=C sort
 }
 
-# Select config file using fzf
+list_config_names() {
+    local f
+    list_config_files | while IFS= read -r f; do basename "$f"; done
+}
+
+# Resolve a config argument to a path: full path, basename, or "config-<name>".
+# Prints nothing and returns 1 when there is no exact hit.
+resolve_config_exact() {
+    local name="$1"
+    if [[ -f "$name" ]]; then echo "$name"; return 0; fi
+    if [[ -f "$AWS_DIR/$name" ]]; then echo "$AWS_DIR/$name"; return 0; fi
+    if [[ "$name" != config* && -f "$AWS_DIR/config-$name" ]]; then
+        echo "$AWS_DIR/config-$name"; return 0
+    fi
+    return 1
+}
+
+# Pick exactly one line from candidates: 1 match -> it, several -> ask (or fail).
+pick_one() {
+    local what="$1" query="$2" candidates="$3" count
+    [[ -z "$candidates" ]] && return 1
+    count=$(printf '%s\n' "$candidates" | wc -l | tr -d ' ')
+    if [[ "$count" -eq 1 ]]; then
+        echo "$candidates"; return 0
+    fi
+    if interactive; then
+        need_fzf
+        printf '%s\n' "$candidates" | fzf --height=40% --border --query="$query" \
+            --prompt="$what > " --header="$count ${what}s match '$query'" ||
+            error "No $what selected"
+        return 0
+    fi
+    error "'$query' matches $count ${what}s, be more specific:
+$(printf '%s\n' "$candidates" | sed 's/^/  /')"
+}
+
+find_config_file() {
+    local name="$1" matches
+    resolve_config_exact "$name" && return 0
+    need_fzf
+    matches=$(list_config_files | fzf --filter="$name" || true)
+    pick_one "config" "$name" "$matches" || error "Config file not found: $name (looked in $AWS_DIR)"
+}
+
 select_config_file() {
-    local config_file
-
-    config_file=$(list_config_files | fzf \
-        --prompt="AWS config file > " \
-        --height=40% \
-        --border \
+    local files
+    files=$(list_config_files)
+    [[ -z "$files" ]] && error "No AWS config files (config*) found in $AWS_DIR"
+    need_fzf
+    printf '%s\n' "$files" | fzf \
+        --prompt="AWS config file > " --height=40% --border \
         --header="Select an AWS config file" \
-        --preview 'echo "--- Preview of {} ---" && sed -n "1,50p" {}' \
-        --preview-window=right:60%)
-
-    [[ -z "$config_file" ]] && error "No config file selected"
-
-    echo "$config_file"
+        --preview 'head -n 50 {}' --preview-window=right:60% ||
+        error "No config file selected"
 }
 
-# Extract profiles from a config file
-extract_profiles() {
+# ---------------------------------------------------------------------------
+# Profiles — one parser, used by everything (selection, lookup, completion)
+# ---------------------------------------------------------------------------
+
+# Print "<profile>\t<account-id>" for every [default] and [profile X] section.
+# [sso-session X], [services X] and other sections are not profiles.
+# Account ID: sso_account_id, falling back to the account in role_arn.
+profiles_tsv() {
     local config_file="$1"
-
-    if [[ ! -f "$config_file" ]]; then
-        error "Config file not found: $config_file"
-    fi
-
-    # Extract profile names from [profile name] and [default]
-    # AWS config format: [profile name] or [default]
-    local profiles
-    profiles=$(grep -E '^\[' "$config_file" | \
-        sed -E 's/^\[(profile )?([^]]+)\]/\2/' | \
-        sort -u)
-
-    if [[ -z "$profiles" ]]; then
-        error "No profiles found in $config_file"
-    fi
-
-    echo "$profiles"
+    [[ -f "$config_file" ]] || error "Config file not found: $config_file"
+    awk '
+        function flush() { if (name != "") print name "\t" (sso != "" ? sso : arn) }
+        { sub(/\r$/, "") }
+        /^[ \t]*\[/ {
+            flush(); name = ""; sso = ""; arn = ""
+            sec = $0
+            sub(/^[ \t]*\[[ \t]*/, "", sec); sub(/[ \t]*\][ \t]*$/, "", sec)
+            if (sec == "default") name = "default"
+            else if (sec ~ /^profile[ \t]+/) { sub(/^profile[ \t]+/, "", sec); name = sec }
+            next
+        }
+        name != "" && /^[ \t]*sso_account_id[ \t]*=/ {
+            v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]+$/, "", v); sso = v
+        }
+        name != "" && /^[ \t]*role_arn[ \t]*=/ {
+            if (match($0, /:[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]:/))
+                arn = substr($0, RSTART + 1, 12)
+        }
+        END { flush() }
+    ' "$config_file" | LC_ALL=C sort -t "$(printf '\t')" -k1,1 -u
 }
 
-# Extract SSO account ID for a specific profile from config file
-extract_account_id() {
-    local config_file="$1"
-    local profile_name="$2"
+profile_names() { profiles_tsv "$1" | cut -f1; }
 
-    # Use awk to match the exact section header, then extract sso_account_id
-    awk -v profile="$profile_name" '
-        /^\[default\]/ && profile == "default" { in_section=1; next }
-        /^\[profile / {
-            # Extract profile name from [profile name]
-            line = $0
-            sub(/^\[profile /, "", line)
-            sub(/\]$/, "", line)
-            if (line == profile) {
-                in_section=1
-                next
-            }
+# "name (account)" or "name" — what the picker shows, searchable by both.
+profile_entries() {
+    profiles_tsv "$1" | awk -F '\t' '{ if ($2 != "") print $1 " (" $2 ")"; else print $1 }'
+}
+
+strip_account() { printf '%s\n' "$1" | sed -E 's/[[:space:]]*\([0-9]+\)[[:space:]]*$//'; }
+
+# Print the config section for one profile (used by the fzf preview).
+preview_profile() {
+    local config_file="$1" profile
+    profile=$(strip_account "$2")
+    awk -v p="$profile" '
+        { sub(/\r$/, "") }
+        /^[ \t]*\[/ {
+            if (found) exit
+            sec = $0
+            sub(/^[ \t]*\[[ \t]*/, "", sec); sub(/[ \t]*\][ \t]*$/, "", sec)
+            sub(/^profile[ \t]+/, "", sec)
+            found = (sec == p)
         }
-        in_section && /^\[/ { exit }
-        in_section && /^sso_account_id[[:space:]]*=/ {
-            sub(/^sso_account_id[[:space:]]*=[[:space:]]*/, "")
-            print
-            exit
-        }
+        found { print }
     ' "$config_file"
 }
 
-# Build composite entries combining profile names with account IDs
-extract_profiles_with_accounts() {
-    local config_file="$1"
-    local profiles
-
-    # Get base profile names
-    profiles=$(extract_profiles "$config_file")
-
-    # Build composite entries
-    while IFS= read -r profile; do
-        local account_id
-        account_id=$(extract_account_id "$config_file" "$profile")
-
-        if [[ -n "$account_id" ]]; then
-            echo "$profile ($account_id)"
-        else
-            echo "$profile"
-        fi
-    done <<< "$profiles"
-}
-
-# Select profile using fzf
 select_profile() {
-    local config_file="$1"
-    local selection profile
-
-    # Use composite entries for unified search
-    selection=$(extract_profiles_with_accounts "$config_file" | fzf \
-        --prompt="AWS profile > " \
-        --height=40% \
-        --border \
-        --header="Select an AWS profile from $(basename "$config_file") - Search by name or account ID" \
-        --preview "echo 'Profile: {}' && echo && grep -A 10 '^\[.*{}\]' '$config_file' || grep -A 10 '^\[profile {}\]' '$config_file'")
-
-    [[ -z "$selection" ]] && error "No profile selected"
-
-    # Extract profile name from "profile-name (account-id)" or "profile-name"
-    profile=$(echo "$selection" | sed -E 's/[[:space:]]*\([^)]+\)[[:space:]]*$//')
-
-    echo "$profile"
+    local config_file="$1" entries selection
+    entries=$(profile_entries "$config_file")
+    [[ -z "$entries" ]] && error "No profiles found in $config_file"
+    need_fzf
+    # shellcheck disable=SC2016  # expanded by fzf's preview shell, not here
+    selection=$(printf '%s\n' "$entries" | \
+        ACAB_SELF="$ACAB_SELF" ACAB_PREVIEW_CONFIG="$config_file" fzf \
+        --prompt="AWS profile > " --height=40% --border \
+        --header="Profiles in $(basename "$config_file") - search by name or account ID" \
+        --preview '"$ACAB_SELF" __preview "$ACAB_PREVIEW_CONFIG" {}') ||
+        error "No profile selected"
+    strip_account "$selection"
 }
 
-# Validate and find config file by name
-find_config_file() {
-    local config_name="$1"
-    local config_path
-
-    # If it's already a full path
-    if [[ -f "$config_name" ]]; then
-        echo "$config_name"
-        return 0
+# Turn user input into exactly one existing profile name.
+resolve_profile() {
+    local config_file="$1" input="$2" matches
+    if profile_names "$config_file" | grep -qxF -- "$input"; then
+        echo "$input"; return 0
     fi
 
-    # Try as basename
-    config_path="$AWS_DIR/$config_name"
-    if [[ -f "$config_path" ]]; then
-        echo "$config_path"
-        return 0
-    fi
-
-    # Try with 'config' prefix if not already present
-    if [[ ! "$config_name" =~ ^config ]]; then
-        config_path="$AWS_DIR/config-$config_name"
-        if [[ -f "$config_path" ]]; then
-            echo "$config_path"
-            return 0
-        fi
-    fi
-
-    # Use fzf to fuzzy find
-    local found
-    found=$(list_config_files | fzf \
-        --filter="$config_name" \
-        --select-1 \
-        --exit-0)
-
-    if [[ -n "$found" ]]; then
-        echo "$found"
-        return 0
-    fi
-
-    error "Config file not found: $config_name"
-}
-
-# Validate profile exists in config file
-validate_profile() {
-    local config_file="$1"
-    local profile_input="$2"
-
-    # First: exact profile name match (fast path)
-    if extract_profiles "$config_file" | grep -qxF "$profile_input"; then
-        echo "$profile_input"
-        return 0
-    fi
-
-    # Second: if input is numeric, search by account ID
-    if [[ "$profile_input" =~ ^[0-9]+$ ]]; then
-        local matches
-
-        # Search account IDs efficiently using awk
-        warn "Searching for account IDs containing '$profile_input'..."
-        matches=$(awk -v search="$profile_input" '
-            /^\[default\]/ { current_profile="default"; next }
-            /^\[profile / {
-                line = $0
-                sub(/^\[profile /, "", line)
-                sub(/\]$/, "", line)
-                current_profile = line
-                next
-            }
-            /^sso_account_id[[:space:]]*=/ {
-                sub(/^sso_account_id[[:space:]]*=[[:space:]]*/, "")
-                if (index($0, search) > 0) {
-                    print current_profile
-                }
-            }
-        ' "$config_file")
-
+    # Numeric input: search account IDs (substring match).
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+        matches=$(profiles_tsv "$config_file" | awk -F '\t' -v q="$input" 'index($2, q) { print $1 }')
         if [[ -n "$matches" ]]; then
-            local match_count
-            match_count=$(echo "$matches" | wc -l | tr -d ' ')
-
-            if [[ "$match_count" -eq 1 ]]; then
-                echo "$matches"
-                return 0
-            else
-                # Multiple matches - let user select
-                warn "Found $match_count profiles matching '$profile_input'"
-                local selected
-                selected=$(echo "$matches" | fzf \
-                    --prompt="Select profile > " \
-                    --height=40% \
-                    --border \
-                    --header="Select from $match_count matching profiles")
-
-                if [[ -n "$selected" ]]; then
-                    echo "$selected"
-                    return 0
-                fi
-            fi
+            pick_one "profile" "$input" "$matches"; return 0
         fi
     fi
 
-    # Third: fuzzy search on profile names
-    warn "Profile '$profile_input' not found in $(basename "$config_file")"
-    local found
-    found=$(extract_profiles "$config_file" | fzf \
-        --filter="$profile_input" \
-        --select-1 \
-        --exit-0)
-
-    if [[ -n "$found" ]]; then
-        echo "$found"
-        return 0
-    fi
-
-    error "Profile not found: $profile_input"
+    need_fzf
+    matches=$(profile_names "$config_file" | fzf --filter="$input" || true)
+    pick_one "profile" "$input" "$matches" ||
+        error "Profile not found in $(basename "$config_file"): $input"
 }
 
-# Set AWS config and profile
-set_aws_config() {
-    local config_file="$1"
-    local profile="$2"
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
 
-    # Send informational output to stderr (so it displays but doesn't get eval'd)
+emit_exports() {
+    local config_file="$1" profile="$2"
     success "✓ AWS configuration updated:"
-    echo "  AWS_CONFIG_FILE=$config_file" >&2
-    echo "  AWS_PROFILE=$profile" >&2
-    echo "" >&2
-    echo "  Double-check with:" >&2
-    echo '  echo "AWS_CONFIG_FILE=$AWS_CONFIG_FILE"; echo "AWS_PROFILE=$AWS_PROFILE"' >&2
-    echo "" >&2
-
-    # Output only the export commands to stdout (for eval)
-    echo "export AWS_CONFIG_FILE='$config_file'"
-    echo "export AWS_PROFILE='$profile'"
+    {
+        echo "  AWS_CONFIG_FILE=$config_file"
+        echo "  AWS_PROFILE=$profile"
+        echo ""
+        echo "  Double-check with:"
+        # shellcheck disable=SC2016  # printed literally on purpose
+        echo '  echo "AWS_CONFIG_FILE=$AWS_CONFIG_FILE"; echo "AWS_PROFILE=$AWS_PROFILE"'
+        echo ""
+    } >&2
+    # %q quotes safely: a crafted profile name can never run code through eval.
+    printf 'export AWS_CONFIG_FILE=%q\n' "$config_file"
+    printf 'export AWS_PROFILE=%q\n' "$profile"
 }
 
-# Show usage
-usage() {
-    cat << EOF
-ACAB - All Configs Are Beautiful
-
-Usage:
-    acab                        # Interactive mode: select config and profile
-    acab <config>               # Select config, then choose profile
-    acab <config> <profile>     # Set config and profile directly
-
-Examples:
-    acab                        # Select both interactively
-    acab config-personal        # Choose config-personal, then select profile
-    acab config work-profile    # Set config and work-profile directly
-    acab config 444455556666    # Select profile by account ID (if multiple roles)
-
-Environment Variables:
-    AWS_CONFIG_DIR              # Directory containing AWS configs (default: ~/.aws)
-
-Requirements:
-    - fzf (https://github.com/junegunn/fzf)
-
-EOF
-    exit 0
-}
-
-# Main function
-main() {
-    # Check for help flag
-    if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
-        usage
-    fi
-
-    # Check dependencies
-    check_fzf
-
-    local config_file profile
-
-    case $# in
-        0)
-            # Interactive mode: select both
-            config_file=$(select_config_file)
-            profile=$(select_profile "$config_file")
-            ;;
-        1)
-            # Select config, then profile interactively
-            config_file=$(find_config_file "$1")
-            profile=$(select_profile "$config_file")
-            ;;
-        2)
-            # Direct mode: both provided
-            config_file=$(find_config_file "$1")
-            # Extract profile name from composite entry if needed
-            local profile_input
-            profile_input=$(echo "$2" | sed -E 's/[[:space:]]*\([^)]+\)[[:space:]]*$//')
-            # Validate and potentially fuzzy-find profile
-            profile=$(validate_profile "$config_file" "$profile_input")
-            [[ -z "$profile" ]] && profile="$profile_input"
-            ;;
-        *)
-            error "Too many arguments. Use 'acab --help' for usage."
-            ;;
+init_shell() {
+    local shell="${1:-}" bin
+    bin=$(printf '%q' "$ACAB_SELF")
+    case "$shell" in
+        zsh|bash) ;;
+        "") error "Usage: acab init <zsh|bash>" ;;
+        *)  error "Unsupported shell '$shell'. Supported: zsh, bash" ;;
     esac
 
-    set_aws_config "$config_file" "$profile"
+    cat <<EOF
+# acab shell integration — generated by \`acab init $shell\`
+acab() {
+    case "\${1:-}" in
+        init|-h|--help|-V|--version|__*) command $bin "\$@"; return ;;
+    esac
+    local __acab_out
+    __acab_out="\$(command $bin "\$@")" || return \$?
+    eval "\$__acab_out"
+}
+EOF
+
+    if [[ "$shell" == zsh ]]; then
+        cat <<EOF
+_acab() {
+    local -a items
+    case \$CURRENT in
+        2) items=("\${(@f)\$(command $bin __list-configs 2>/dev/null)}") ;;
+        3) items=("\${(@f)\$(command $bin __list-profiles "\${words[2]}" 2>/dev/null)}") ;;
+        *) return 1 ;;
+    esac
+    compadd -a items
+}
+if (( \$+functions[compdef] )); then compdef _acab acab; fi
+EOF
+    else
+        cat <<EOF
+_acab_complete() {
+    local cur="\${COMP_WORDS[COMP_CWORD]}" IFS=\$'\n'
+    case \$COMP_CWORD in
+        1) COMPREPLY=(\$(compgen -W "\$(command $bin __list-configs 2>/dev/null)" -- "\$cur")) ;;
+        2) COMPREPLY=(\$(compgen -W "\$(command $bin __list-profiles "\${COMP_WORDS[1]}" 2>/dev/null)" -- "\$cur")) ;;
+    esac
+}
+complete -F _acab_complete acab
+EOF
+    fi
+}
+
+usage() {
+    cat >&2 <<EOF
+acab $VERSION - All Configs Are Beautiful
+Switch between AWS config files and profiles with fzf.
+
+Usage:
+    acab                        Pick a config file, then a profile
+    acab <config>               Use <config>, pick a profile
+    acab <config> <profile>     Set both directly (fuzzy fallback)
+    acab <config> <account-id>  Pick the profile by (partial) account ID
+    acab init <zsh|bash>        Print the shell integration (see Setup)
+    acab -h | --help            Show this help
+    acab -V | --version         Show the version
+
+Setup (once), add to ~/.zshrc or ~/.bashrc:
+    eval "\$(acab init zsh)"     # or: eval "\$(acab init bash)"
+
+Examples:
+    acab work                   # ~/.aws/config-work, then choose a profile
+    acab work prod              # set AWS_PROFILE=prod from config-work
+    acab work 4444              # profile whose account ID contains 4444
+
+Environment:
+    AWS_CONFIG_DIR              Directory with config* files (default: ~/.aws)
+    NO_COLOR                    Disable colored output
+
+Requires bash 3.2+ and fzf (https://github.com/junegunn/fzf).
+EOF
+}
+
+main() {
+    case "${1:-}" in
+        -h|--help)       usage; exit 0 ;;
+        -V|--version)    echo "acab $VERSION" >&2; exit 0 ;;
+        init)            shift; init_shell "$@"; exit 0 ;;
+        __list-configs)  list_config_names; exit 0 ;;
+        __list-profiles)
+            local cfg
+            cfg=$(resolve_config_exact "${2:-}") || exit 1
+            if [[ "${3:-}" == --accounts ]]; then profile_entries "$cfg"; else profile_names "$cfg"; fi
+            exit 0 ;;
+        __preview)       preview_profile "${2:?}" "${3:?}"; exit 0 ;;
+    esac
+
+    local config_file profile
+    case $# in
+        0)
+            config_file=$(select_config_file)
+            profile=$(select_profile "$config_file") ;;
+        1)
+            config_file=$(find_config_file "$1")
+            profile=$(select_profile "$config_file") ;;
+        2)
+            config_file=$(find_config_file "$1")
+            profile=$(resolve_profile "$config_file" "$(strip_account "$2")") ;;
+        *)
+            error "Too many arguments. See 'acab --help'." ;;
+    esac
+
+    emit_exports "$config_file" "$profile"
 }
 
 main "$@"

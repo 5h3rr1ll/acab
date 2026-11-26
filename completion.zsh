@@ -1,78 +1,31 @@
 #!/usr/bin/env zsh
 #
-# ACAB - Shell completion for zsh
+# acab - legacy zsh completion
 #
-# Source this file in your ~/.zshrc:
-#   source /path/to/acab/completion.zsh
+# Prefer the one-line setup instead of this file:
+#     eval "$(acab init zsh)"
+#
+# Kept for setups that already do:
+#     source /path/to/acab/completion.zsh
+#     compdef _acab_completion acab
+#
+# Data comes from the acab script itself (`acab __list-*`), so completion and
+# the tool always agree on what counts as a config file or profile.
 
-# Only run in zsh
 [[ -n "${ZSH_VERSION-}" ]] || return 0
 
-# Initialize zsh completion system if not already done
-if ! type compdef &>/dev/null; then
-    autoload -Uz compinit
-    compinit
-fi
+typeset -g _acab_bin="${${(%):-%x}:A:h}/acab"
 
-# Configuration
-_acab_aws_dir="${AWS_CONFIG_DIR:-$HOME/.aws}"
-
-# Get list of config files
-_acab_list_configs() {
-    find "$_acab_aws_dir" -maxdepth 1 -type f -name "config*" 2>/dev/null | \
-        xargs -n1 basename 2>/dev/null | \
-        sort -u
-}
-
-# Get list of profiles from a config file
-_acab_list_profiles() {
-    local config_file="$1"
-    local config_path
-
-    # Resolve full path
-    if [[ -f "$config_file" ]]; then
-        config_path="$config_file"
-    elif [[ -f "$_acab_aws_dir/$config_file" ]]; then
-        config_path="$_acab_aws_dir/$config_file"
-    else
-        return 1
-    fi
-
-    # Extract profiles (without account IDs for performance)
-    grep -E '^\[' "$config_path" 2>/dev/null | \
-        sed -E 's/^\[(profile )?([^]]+)\]/\2/' | \
-        sort -u
-}
-
-# Main completion function
 _acab_completion() {
-    local -a configs profiles
-    local state
-
-    _arguments -C \
-        '1:config file:->configs' \
-        '2:profile:->profiles' \
-        && return 0
-
-    case $state in
-        configs)
-            # If fzf is available, use it for interactive selection
-            if command -v fzf &>/dev/null && [[ -t 0 ]]; then
-                configs=(${(@f)"$(_acab_list_configs)"})
-                _describe 'AWS config files' configs
-            else
-                configs=(${(@f)"$(_acab_list_configs)"})
-                _describe 'AWS config files' configs
-            fi
-            ;;
-        profiles)
-            if [[ -n "${words[2]}" ]]; then
-                profiles=(${(@f)"$(_acab_list_profiles "${words[2]}")"})
-                _describe 'AWS profiles' profiles
-            fi
-            ;;
+    local -a items
+    case $CURRENT in
+        2) items=("${(@f)$("$_acab_bin" __list-configs 2>/dev/null)}") ;;
+        3) items=("${(@f)$("$_acab_bin" __list-profiles "${words[2]}" 2>/dev/null)}") ;;
+        *) return 1 ;;
     esac
+    compadd -a items
 }
 
-# Register the completion function
-compdef _acab_completion acab
+if (( $+functions[compdef] )); then
+    compdef _acab_completion acab
+fi

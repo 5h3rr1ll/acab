@@ -16,7 +16,6 @@ current shell.
 |---|---|
 | `acab` | The whole tool. Bash, no build step. |
 | `install.sh` | Symlinks `acab` into `~/.local/bin`, opt-in rc line, `--uninstall`. |
-| `completion.zsh` | Legacy zsh completion for old setups. New setups use `acab init zsh`. |
 | `test/*.bats` | bats-core tests. `test/fixtures/aws/` holds fake AWS configs. |
 | `test/stubs/fzf` | fzf stand-in so `test/interactive.bats` can drive pickers and previews. |
 | `docs/demo.tape` | vhs script that renders `docs/demo.gif` (uses `docs/demo-aws/`, fake data). |

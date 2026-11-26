@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Removed
+- `completion.zsh`; zsh completion comes from `acab init zsh`.
+
 ## [1.0.0] - 2026-11-26
 
 First standalone release (previously part of `5h3rr1ll/my_scripts`).
@@ -28,7 +31,6 @@ First standalone release (previously part of `5h3rr1ll/my_scripts`).
 ### Changed
 - One awk pass parses a config file (was one awk call per profile).
 - fzf is only required when a fuzzy or interactive step needs it.
-- `completion.zsh` is kept for existing setups but reads its data from `acab` itself.
 
 ## [0.x] - before 2026-11-26
 

@@ -5,8 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-26
+
 ### Removed
 - `completion.zsh`; zsh completion comes from `acab init zsh`.
+- README section on upgrading from the pre-release hand-written setup.
 
 ## [1.0.0] - 2026-11-26
 
@@ -36,5 +39,6 @@ First standalone release (previously part of `5h3rr1ll/my_scripts`).
 
 Developed inside `my_scripts`: interactive config/profile picking, account-ID search, zsh completion.
 
-[Unreleased]: https://github.com/5h3rr1ll/acab/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/5h3rr1ll/acab/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/5h3rr1ll/acab/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/5h3rr1ll/acab/releases/tag/v1.0.0

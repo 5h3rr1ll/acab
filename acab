@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.0.1"
 readonly AWS_DIR="${AWS_CONFIG_DIR:-$HOME/.aws}"
 
 # Path to this script, symlinks kept as-is (stable across Homebrew upgrades).

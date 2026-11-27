@@ -53,7 +53,7 @@ eval "$(acab init bash)"
 
 ```bash
 acab                        # pick a config file, then a profile
-acab work                   # ~/.aws/config-work → pick a profile
+acab work                   # ~/.aws/config-work → pick a profile (same as `acab config-work`)
 acab work prod              # set it directly (fuzzy fallback: `acab work prd` works too)
 acab work 444455556666      # pick the profile by account ID (partial IDs work)
 acab <TAB>                  # complete config files; `acab work <TAB>` completes profiles
